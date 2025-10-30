@@ -3,15 +3,42 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
-import { Video, Lock, Mail } from "lucide-react";
+import { Video, Lock, Mail, Loader2 } from "lucide-react";
+import { loginSuperAdmin } from "../api/client";
+
+const INITIAL_FORM_STATE = {
+  email: "",
+  password: ""
+};
 
 export function Login({ onLogin }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [formState, setFormState] = useState(INITIAL_FORM_STATE);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
 
-  const handleSubmit = (event) => {
+  const handleChange = (event) => {
+    const { name, value } = event.target;
+    setFormState((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = async (event) => {
     event.preventDefault();
-    onLogin();
+    setError(null);
+    setSubmitting(true);
+
+    try {
+      const result = await loginSuperAdmin({
+        email: formState.email,
+        password: formState.password
+      });
+
+      onLogin(result.admin ?? null);
+      setFormState(INITIAL_FORM_STATE);
+    } catch (submitError) {
+      setError(submitError.message ?? "Unable to sign in");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -38,8 +65,9 @@ export function Login({ onLogin }) {
                   id="email"
                   type="email"
                   placeholder="admin@example.com"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  name="email"
+                  value={formState.email}
+                  onChange={handleChange}
                   className="pl-10"
                   required
                 />
@@ -53,8 +81,9 @@ export function Login({ onLogin }) {
                   id="password"
                   type="password"
                   placeholder="••••••••"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
+                  name="password"
+                  value={formState.password}
+                  onChange={handleChange}
                   className="pl-10"
                   required
                 />
@@ -69,11 +98,25 @@ export function Login({ onLogin }) {
                 Forgot password?
               </a>
             </div>
-            <Button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700">
-              Sign In
+            {error ? <p className="text-sm text-red-600">{error}</p> : null}
+            <Button
+              type="submit"
+              disabled={submitting}
+              className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-70"
+            >
+              {submitting ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Signing In
+                </span>
+              ) : (
+                "Sign In"
+              )}
             </Button>
           </form>
-          <div className="mt-6 text-center text-sm text-slate-600">Demo credentials: Any email/password will work</div>
+          <div className="mt-6 text-center text-sm text-slate-600">
+            Enter your super admin credentials to continue.
+          </div>
         </CardContent>
       </Card>
     </div>

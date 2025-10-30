@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Login } from "./components/Login.jsx";
 import { Sidebar } from "./components/Sidebar.jsx";
 import { Footer } from "./components/Footer.jsx";
@@ -9,16 +9,60 @@ import { Analytics } from "./components/Analytics.jsx";
 import { Users } from "./components/Users.jsx";
 import { Settings } from "./components/Settings.jsx";
 
+const ADMIN_SESSION_STORAGE_KEY = "mediaflow-admin-session";
+
+const getStoredAdminSession = () => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const stored = window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
+  if (!stored) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(stored);
+
+    if (parsed && typeof parsed === "object" && "admin" in parsed) {
+      return {
+        admin: parsed.admin ?? null,
+        savedAt: parsed.savedAt ?? null,
+      };
+    }
+
+    return { admin: parsed ?? null, savedAt: null };
+  } catch {
+    window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+    return null;
+  }
+};
+
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const storedSession = useMemo(() => getStoredAdminSession(), []);
+  const [admin, setAdmin] = useState(storedSession?.admin ?? null);
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(storedSession));
   const [activeTab, setActiveTab] = useState("dashboard");
 
-  const handleLogin = () => {
+  const handleLogin = (adminInfo) => {
     setIsAuthenticated(true);
+    setAdmin(adminInfo ?? null);
+
+    if (typeof window !== "undefined") {
+      const sessionPayload = {
+        admin: adminInfo ?? null,
+        savedAt: new Date().toISOString(),
+      };
+      window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, JSON.stringify(sessionPayload));
+    }
   };
 
   const handleLogout = () => {
     setIsAuthenticated(false);
+    setAdmin(null);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+    }
     setActiveTab("dashboard");
   };
 
@@ -37,7 +81,7 @@ export default function App() {
       case "analytics":
         return <Analytics />;
       case "users":
-        return <Users />;
+        return <Users admin={admin} />;
       case "settings":
         return <Settings />;
       default:
@@ -52,7 +96,7 @@ export default function App() {
       <div className="flex-1 flex flex-col">
         <header className="bg-white/80 backdrop-blur-sm border-b border-slate-200 sticky top-0 z-10 shadow-sm">
           <div className="px-8 py-5">
-            <div className="flex items-center justify-between">
+            <div className="max-w-7xl mx-auto flex items-center justify-between">
               <div>
                 <h1 className="text-slate-900 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
                   {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
@@ -79,7 +123,9 @@ export default function App() {
           </div>
         </header>
 
-        <main className="flex-1 px-8 py-8">{renderContent()}</main>
+        <main className="flex-1 px-8 py-8">
+          <div className="max-w-7xl mx-auto w-full">{renderContent()}</div>
+        </main>
 
         <Footer />
       </div>

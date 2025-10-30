@@ -1,14 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
-import { Input } from "./ui/input";
-import { Button } from "./ui/button";
-import { Label } from "./ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
-import { MoreVertical, Eye, ExternalLink, Loader2, FileText, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight } from "lucide-react";
+import { Label } from "./ui/label";
+import {
+  Clock,
+  CheckCircle2,
+  XCircle,
+  MoreVertical,
+  Eye,
+  ExternalLink,
+  Loader2,
+  FileText,
+  ChevronsLeft,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsRight,
+} from "lucide-react";
 import { fetchMediaLibrary, importMediaMetadata, refreshMediaDownloadUrl } from "../api/client";
 
 const formatMetadataDate = (value) => {
@@ -63,7 +76,7 @@ const getMediaReference = (item) => {
   return String(rawRef).trim();
 };
 
-export function MediaLibrary() {
+export function ProcessingQueueOne() {
   const [mediaItems, setMediaItems] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedMedia, setSelectedMedia] = useState(null);
@@ -101,7 +114,6 @@ export function MediaLibrary() {
     }
 
     const query = searchQuery.toLowerCase();
-
     return mediaItems.filter((item) => buildSearchHaystack(item).includes(query));
   }, [mediaItems, searchQuery]);
 
@@ -112,12 +124,8 @@ export function MediaLibrary() {
 
   useEffect(() => {
     setCurrentPage((prev) => {
-      if (prev > totalPages) {
-        return totalPages;
-      }
-      if (prev < 1) {
-        return 1;
-      }
+      if (prev > totalPages) return totalPages;
+      if (prev < 1) return 1;
       return prev;
     });
   }, [totalPages]);
@@ -210,7 +218,6 @@ export function MediaLibrary() {
       setLinkLoadingRef(null);
     }
   };
-
   const renderTableBody = () => {
     if (loading) {
       return (
@@ -330,23 +337,34 @@ export function MediaLibrary() {
     });
   };
 
+  const stats = [
+    { label: "In Queue", value: "2", icon: Clock, color: "text-slate-600" },
+    { label: "Processing", value: "3", icon: Clock, color: "text-orange-600" },
+    { label: "Completed", value: "1", icon: CheckCircle2, color: "text-green-600" },
+    { label: "Failed", value: "1", icon: XCircle, color: "text-red-600" },
+  ];
+
   return (
     <div className="space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {stats.map((stat) => (
+          <Card key={stat.label} className="border-0 shadow-md">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-slate-600 text-sm">{stat.label}</p>
+                  <p className="text-slate-900 mt-1">{stat.value}</p>
+                </div>
+                <stat.icon className={`w-5 h-5 ${stat.color}`} />
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
       <Card className="border-0 shadow-md">
         <CardHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-1">
-              <CardTitle>Media Library</CardTitle>
-              <CardDescription>Catalog of media assets sourced from the latest metadata export.</CardDescription>
-            </div>
-            <Button
-              onClick={() => setIsUploadDialogOpen(true)}
-              size="sm"
-              className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 px-4"
-            >
-              Upload Media
-            </Button>
-          </div>
+          <CardTitle>Process Queue 1</CardTitle>
         </CardHeader>
         <CardContent className="pt-6 space-y-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -579,85 +597,53 @@ export function MediaLibrary() {
       </Dialog>
 
       <Dialog open={isUploadDialogOpen} onOpenChange={handleUploadDialogChange}>
-        <DialogContent className="max-w-xl p-0 overflow-hidden">
-          <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 px-6 py-5">
-            <DialogHeader className="text-white space-y-2">
-              <DialogTitle className="text-white text-lg">Update Metadata Library</DialogTitle>
-              <DialogDescription className="text-white/80">
-                Upload a JSON export of your media items. We will merge new entries and update existing ones.
-              </DialogDescription>
-            </DialogHeader>
-          </div>
-
-          <form onSubmit={handleUploadSubmit} className="px-6 pb-6 pt-0 space-y-5">
-            <div className="grid gap-4">
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-start gap-3">
-                <div className="bg-white rounded-lg shadow-sm p-2">
-                  <FileText className="w-5 h-5 text-blue-600" />
-                </div>
-                <div className="space-y-1.5 text-sm text-slate-600">
-                  <p className="font-medium text-slate-900">Metadata Requirements</p>
-                  <ul className="list-disc list-inside space-y-1 text-xs text-slate-500">
-                    <li>Provide a JSON array of metadata entries.</li>
-                    <li>Existing resources will update when IDs match.</li>
-                    <li>Include a `metadata` object for detailed fields.</li>
-                  </ul>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="media-upload-input" className="text-slate-600">
-                  Select metadata file
-                </Label>
-                <div className="bg-white border border-slate-200 rounded-xl px-4 py-5 shadow-sm flex flex-col gap-4">
-                  <Input
-                    id="media-upload-input"
-                    type="file"
-                    accept="application/json"
-                    onChange={handleFileChange}
-                    required
-                    className="file:mr-3 file:rounded-md file:border file:border-slate-200 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
-                  />
-                  <p className="text-[11px] leading-relaxed text-slate-500">
-                    Need a template? Export your current library to reuse its structure, or consult the API docs for field
-                    definitions.
-                  </p>
-                  {uploadFile ? (
-                    <div className="flex items-center gap-2 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-100 rounded-md px-3 py-2">
-                      <FileText className="w-3.5 h-3.5" />
-                      <span className="truncate">{uploadFile.name}</span>
-                    </div>
-                  ) : null}
-                  {uploadError ? (
-                    <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-md px-3 py-2">{uploadError}</p>
-                  ) : null}
-                </div>
-              </div>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Upload Metadata JSON</DialogTitle>
+            <DialogDescription>
+              Import additional media entries using the same JSON structure as{" "}
+              <code className="px-1 py-0.5 rounded bg-slate-100 text-xs">latest-video-metadata-page-001.json</code>.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleUploadSubmit} className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="media-upload-input" className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-slate-500" />
+                Metadata File
+              </Label>
+              <Input
+                id="media-upload-input"
+                type="file"
+                accept="application/json"
+                onChange={handleFileChange}
+                required
+              />
+              <p className="text-[11px] text-slate-500">
+                The file should contain an array of metadata entries. Existing resources will be updated if duplicates are found.
+              </p>
+              {uploadFile ? (
+                <p className="text-xs text-slate-600 truncate">Selected file: {uploadFile.name}</p>
+              ) : null}
+              {uploadError ? <p className="text-sm text-red-600">{uploadError}</p> : null}
             </div>
-
-            <DialogFooter className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-2">
-              <div className="text-xs text-slate-500">
-                Large uploads may take a few seconds to process. Please keep the window open until the upload completes.
-              </div>
-              <div className="flex items-center gap-2">
-                <Button type="button" variant="outline" onClick={() => handleUploadDialogChange(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={isUploading || !uploadFile}
-                  className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-70 min-w-[140px]"
-                >
-                  {isUploading ? (
-                    <span className="flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Uploading…
-                    </span>
-                  ) : (
-                    'Import Metadata'
-                  )}
-                </Button>
-              </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => handleUploadDialogChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={isUploading || !uploadFile}
+                className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-70"
+              >
+                {isUploading ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Uploading...
+                  </span>
+                ) : (
+                  "Import Metadata"
+                )}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
