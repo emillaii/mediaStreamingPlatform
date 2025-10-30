@@ -1,0 +1,26 @@
+# Node.js dependencies and build outputs
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Local environment files
+.env
+.env.*
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Media processing outputs
+mediaProcessing/temp/
+
+# Build artifacts
+dist/
+build/

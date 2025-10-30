@@ -1,0 +1,29 @@
+[
+  {
+    "name": "1080p",
+    "width": 1920,
+    "height": 1080,
+    "videoBitrate": "5000k",
+    "audioBitrate": "192k",
+    "maxVideoBitrate": "7500k",
+    "videoBufsize": "10000k"
+  },
+  {
+    "name": "720p",
+    "width": 1280,
+    "height": 720,
+    "videoBitrate": "3000k",
+    "audioBitrate": "160k",
+    "maxVideoBitrate": "4500k",
+    "videoBufsize": "6000k"
+  },
+  {
+    "name": "480p",
+    "width": 854,
+    "height": 480,
+    "videoBitrate": "1500k",
+    "audioBitrate": "128k",
+    "maxVideoBitrate": "2250k",
+    "videoBufsize": "3000k"
+  }
+]
