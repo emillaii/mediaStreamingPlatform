@@ -72,89 +72,188 @@ const normalizeMetadataEntry = (entry) => {
   };
 };
 
-const mapRowToMediaItem = (row) => ({
-  id: row.id,
-  ref: row.ref,
-  page: row.page,
-  positionOnPage: row.position_on_page,
-  title: row.title,
-  extension: row.extension,
-  listDate: row.list_date,
-  detailDate: row.detail_date,
-  effectiveDate: row.effective_date,
-  primaryVideoUrl: row.primary_video_url,
-  videoUrls: row.video_urls ?? [],
-  resourceId: row.resource_id,
-  access: row.access,
-  contributedBy: row.contributed_by,
-  keywords: row.keywords ?? [],
-  oleCourseCode: row.ole_course_code,
-  oleTermCode: row.ole_term_code,
-  rawMetadata: Array.isArray(row.raw_metadata) ? row.raw_metadata : row.raw_metadata ?? []
-});
+const mapRowToMediaItem = (row) => {
+  const processingStatus = row.processing_status ?? null;
+  const processingResult = row.processing_result ?? null;
+  const normalizedStatus = processingStatus ? String(processingStatus).toLowerCase() : null;
 
-const buildSearchFilter = (search) => {
+  let mediaStatus = 'open';
+  if (normalizedStatus === 'completed') {
+    mediaStatus = 'ingested';
+  } else if (normalizedStatus === 'queued') {
+    mediaStatus = 'enqueued';
+  } else if (['downloading', 'encoding', 'processing'].includes(normalizedStatus)) {
+    mediaStatus = 'processing';
+  } else if (normalizedStatus === 'failed') {
+    mediaStatus = 'failed';
+  }
+
+  return {
+    id: row.id,
+    ref: row.ref,
+    page: row.page,
+    positionOnPage: row.position_on_page,
+    title: row.title,
+    extension: row.extension,
+    listDate: row.list_date,
+    detailDate: row.detail_date,
+    effectiveDate: row.effective_date,
+    primaryVideoUrl: row.primary_video_url,
+    videoUrls: row.video_urls ?? [],
+    resourceId: row.resource_id,
+    access: row.access,
+    contributedBy: row.contributed_by,
+    keywords: row.keywords ?? [],
+    oleCourseCode: row.ole_course_code,
+    oleTermCode: row.ole_term_code,
+    rawMetadata: Array.isArray(row.raw_metadata) ? row.raw_metadata : row.raw_metadata ?? [],
+    processingStatus,
+    mediaStatus,
+    processingResult,
+    processingUpdatedAt: row.processing_updated_at ?? null,
+    processingCompletedAt: row.processing_completed_at ?? null
+  };
+};
+
+const baseSelectQuery = `
+  SELECT
+    mi.id,
+    mi.ref,
+    mi.page,
+    mi.position_on_page,
+    mi.title,
+    mi.extension,
+    mi.list_date,
+    mi.detail_date,
+    mi.effective_date,
+    mi.primary_video_url,
+    mi.video_urls,
+    mi.resource_id,
+    mi.access,
+    mi.contributed_by,
+    mi.keywords,
+    mi.ole_course_code,
+    mi.ole_term_code,
+    mi.raw_metadata,
+    pj.processing_status,
+    pj.processing_result,
+    pj.processing_updated_at,
+    pj.processing_completed_at
+  FROM media_items mi
+  LEFT JOIN LATERAL (
+    SELECT
+      pj.status AS processing_status,
+      pj.result AS processing_result,
+      pj.updated_at AS processing_updated_at,
+      pj.completed_at AS processing_completed_at
+    FROM processing_jobs pj
+    WHERE pj.media_item_id = mi.id OR (pj.ref IS NOT NULL AND pj.ref = mi.ref)
+    ORDER BY pj.updated_at DESC
+    LIMIT 1
+  ) pj ON TRUE
+`;
+
+const buildSearchFilter = (search, startingIndex = 1) => {
   if (!search || !search.trim()) {
     return { clause: '', params: [] };
   }
 
   const term = `%${search.trim()}%`;
+  const placeholder = `$${startingIndex}`;
   const clause = `
     WHERE (
-      COALESCE(title, '') ||
+      COALESCE(mi.title, '') ||
       ' ' ||
-      COALESCE(ref, '') ||
+      COALESCE(mi.ref, '') ||
       ' ' ||
-      COALESCE(resource_id, '') ||
+      COALESCE(mi.resource_id, '') ||
       ' ' ||
-      COALESCE(access, '') ||
+      COALESCE(mi.access, '') ||
       ' ' ||
-      COALESCE(contributed_by, '') ||
+      COALESCE(mi.contributed_by, '') ||
       ' ' ||
-      COALESCE(ole_course_code, '') ||
+      COALESCE(mi.ole_course_code, '') ||
       ' ' ||
-      COALESCE(ole_term_code, '') ||
+      COALESCE(mi.ole_term_code, '') ||
       ' ' ||
-      COALESCE(array_to_string(keywords, ' '), '')
-    ) ILIKE $1
+      COALESCE(array_to_string(mi.keywords, ' '), '')
+    ) ILIKE ${placeholder}
   `;
 
   return { clause, params: [term] };
 };
 
-export const getAllMediaItems = async ({ search } = {}) => {
+export const getAllMediaItems = async ({ search, page = 1, pageSize = 20 } = {}) => {
+  const requestedPage = Number.isFinite(Number(page)) && Number(page) > 0 ? Number(page) : 1;
+  const requestedPageSizeRaw = Number.isFinite(Number(pageSize)) && Number(pageSize) > 0 ? Number(pageSize) : 20;
+  const normalizedPageSize = Math.min(requestedPageSizeRaw, 200);
+
   const { clause, params } = buildSearchFilter(search);
 
-  const query = `
-    SELECT
-      id,
-      ref,
-      page,
-      position_on_page,
-      title,
-      extension,
-      list_date,
-      detail_date,
-      effective_date,
-      primary_video_url,
-      video_urls,
-      resource_id,
-      access,
-      contributed_by,
-      keywords,
-      ole_course_code,
-      ole_term_code,
-      raw_metadata
-    FROM media_items
-    ${clause}
-    ORDER BY
-      page NULLS LAST,
-      position_on_page NULLS LAST,
-      title ASC;
+  const countQuery = `
+    SELECT COUNT(*) AS total
+    FROM media_items mi
+    ${clause};
   `;
 
-  const result = await pool.query(query, params);
-  return result.rows.map(mapRowToMediaItem);
+  const countResult = await pool.query(countQuery, params);
+  const total = Number(countResult.rows[0]?.total ?? 0);
+  const totalPages = total === 0 ? 1 : Math.max(1, Math.ceil(total / normalizedPageSize));
+  const normalizedPage = total === 0 ? 1 : Math.min(requestedPage, totalPages);
+  const offset = (normalizedPage - 1) * normalizedPageSize;
+
+  const orderClause = `
+    ORDER BY
+      mi.page NULLS LAST,
+      mi.position_on_page NULLS LAST,
+      mi.title ASC
+  `;
+
+  const limitPlaceholder = `$${params.length + 1}`;
+  const offsetPlaceholder = `$${params.length + 2}`;
+
+  const dataQuery = `
+    ${baseSelectQuery}
+    ${clause}
+    ${orderClause}
+    LIMIT ${limitPlaceholder}
+    OFFSET ${offsetPlaceholder};
+  `;
+
+  const dataResult = await pool.query(dataQuery, [...params, normalizedPageSize, offset]);
+
+  return {
+    items: dataResult.rows.map(mapRowToMediaItem),
+    total,
+    page: total === 0 ? 1 : normalizedPage,
+    pageSize: normalizedPageSize
+  };
+};
+
+export const getMediaItemById = async (id) => {
+  const result = await pool.query(`${baseSelectQuery} WHERE mi.id = $1`, [id]);
+
+  if (result.rowCount === 0) {
+    return null;
+  }
+
+  return mapRowToMediaItem(result.rows[0]);
+};
+
+export const getMediaItemByRef = async (ref) => {
+  const normalizedRef = `${ref ?? ''}`.trim();
+
+  if (!normalizedRef) {
+    return null;
+  }
+
+  const result = await pool.query(`${baseSelectQuery} WHERE mi.ref = $1`, [normalizedRef]);
+
+  if (result.rowCount === 0) {
+    return null;
+  }
+
+  return mapRowToMediaItem(result.rows[0]);
 };
 
 export const upsertMediaEntries = async (entries) => {

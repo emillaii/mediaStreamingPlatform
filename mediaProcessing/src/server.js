@@ -25,6 +25,12 @@ const JOB_STATUSES = Object.freeze({
 });
 
 const jobs = new Map();
+const jobQueue = [];
+let activeJobs = 0;
+
+const processorConfig = {
+  concurrency: 1
+};
 
 const createJobRecord = (ref) => {
   const now = new Date().toISOString();
@@ -62,6 +68,7 @@ const getJobSummary = (job) => ({
   directories: job.directories,
   mp4: job.result?.mp4,
   hls: job.result?.hls,
+  thumbnail: job.result?.thumbnail,
   progressMessage: job.progressMessage ?? null,
   error: job.error ?? null
 });
@@ -102,6 +109,101 @@ const runFfmpegDownload = (inputUrl, outputPath, headers) => new Promise((resolv
     }
   });
 });
+
+const createThumbnailFromVideo = (inputPath, primaryPath, fallbackPath) =>
+  new Promise((resolve, reject) => {
+    const captureFrame = (seekSeconds, targetPath) =>
+      new Promise((innerResolve, innerReject) => {
+        const args = ['-y'];
+
+        if (seekSeconds > 0) {
+          args.push('-ss', String(seekSeconds));
+        }
+
+        args.push('-i', inputPath, '-frames:v', '1', '-q:v', '2', targetPath);
+
+        const ffmpeg = spawn('ffmpeg', args);
+
+        ffmpeg.on('error', innerReject);
+
+        ffmpeg.stderr.on('data', (data) => {
+          console.log(`[ffmpeg-thumb] ${data}`.trimEnd());
+        });
+
+        ffmpeg.on('close', (code) => {
+          if (code === 0) {
+            innerResolve(targetPath);
+          } else {
+            innerReject(new Error(`ffmpeg exited with code ${code}`));
+          }
+        });
+      });
+
+    const scoreFrame = async (imagePath) => {
+      return new Promise((scoreResolve, scoreReject) => {
+        const ffprobeArgs = [
+          '-v',
+          'error',
+          '-select_streams',
+          'v:0',
+          '-show_entries',
+          'frame_tags=lavfi.signalstats.SAT',
+          '-of',
+          'default=noprint_wrappers=1:nokey=1',
+          '-i',
+          imagePath
+        ];
+
+        const ffprobe = spawn('ffprobe', ffprobeArgs);
+        let output = '';
+
+        ffprobe.stdout.on('data', (data) => {
+          output += data.toString();
+        });
+
+        ffprobe.on('error', scoreReject);
+
+        ffprobe.on('close', (code) => {
+          if (code !== 0) {
+            return scoreReject(new Error(`ffprobe exited with code ${code}`));
+          }
+
+          const value = Number.parseFloat(output.trim());
+          if (Number.isNaN(value)) {
+            return scoreResolve(Infinity);
+          }
+
+          scoreResolve(value);
+        });
+      });
+    };
+
+    const attempt = async () => {
+      try {
+        await captureFrame(0, primaryPath);
+        const score = await scoreFrame(primaryPath);
+
+        if (score > 0.01 || !fallbackPath) {
+          return primaryPath;
+        }
+
+        await captureFrame(3, fallbackPath);
+        return fallbackPath;
+      } catch (error) {
+        if (fallbackPath && !primaryPath.endsWith(fallbackPath)) {
+          await captureFrame(3, fallbackPath);
+          return fallbackPath;
+        }
+        throw error;
+      }
+    };
+
+    attempt()
+      .then(resolve)
+      .catch((error) => {
+        reject(error);
+      });
+  });
 
 const parseBitrate = (bitrate) => {
   if (typeof bitrate === 'number') {
@@ -295,6 +397,29 @@ const runDownloadJob = async (job) => {
     const headerString = `Referer: ${RESOURCE_SPACE_REFERER}\r\nCookie: ${RESOURCE_SPACE_COOKIE}\r\n`;
     await runFfmpegDownload(downloadUrl, outputPath, headerString);
 
+    let thumbnailRecord = null;
+    const primaryThumbnailPath = path.join(refDir, 'thumbnail.jpg');
+    const altThumbnailPath = path.join(refDir, 'thumbnail_alt.jpg');
+    try {
+      const chosenThumbnailPath = await createThumbnailFromVideo(outputPath, primaryThumbnailPath, altThumbnailPath);
+      thumbnailRecord = {
+        path: chosenThumbnailPath,
+        filename: path.basename(chosenThumbnailPath)
+      };
+
+      if (chosenThumbnailPath === altThumbnailPath) {
+        try {
+          await fs.rename(altThumbnailPath, primaryThumbnailPath);
+          thumbnailRecord.path = primaryThumbnailPath;
+          thumbnailRecord.filename = 'thumbnail.jpg';
+        } catch (renameError) {
+          console.warn(`Failed to rename fallback thumbnail for job ${job.id}`, renameError);
+        }
+      }
+    } catch (thumbnailError) {
+      console.error(`Thumbnail generation failed for job ${job.id}`, thumbnailError);
+    }
+
     setJobStatus(job, JOB_STATUSES.encoding, {
       progressMessage: 'Encoding HLS variants'
     });
@@ -323,7 +448,8 @@ const runDownloadJob = async (job) => {
             bandwidth: variant.bandwidth,
             resolution: variant.resolution
           }))
-        }
+        },
+        thumbnail: thumbnailRecord
       }
     });
   } catch (error) {
@@ -388,6 +514,40 @@ const ensureOutputDirs = async (ref) => {
   return { sanitizedRef, refDir, mp4Dir, hlsDir };
 };
 
+const dispatchNextJobs = () => {
+  while (activeJobs < processorConfig.concurrency && jobQueue.length > 0) {
+    const jobId = jobQueue.shift();
+    const job = jobs.get(jobId);
+
+    if (!job || job.status !== JOB_STATUSES.queued) {
+      continue;
+    }
+
+    activeJobs += 1;
+
+    setImmediate(() => {
+      runDownloadJob(job)
+        .catch((error) => {
+          console.error(`Unexpected job error for ${job.id}:`, error);
+          setJobStatus(job, JOB_STATUSES.failed, {
+            progressMessage: 'Failed',
+            error: error.message,
+            result: undefined
+          });
+        })
+        .finally(() => {
+          activeJobs = Math.max(activeJobs - 1, 0);
+          dispatchNextJobs();
+        });
+    });
+  }
+};
+
+const enqueueJobExecution = (job) => {
+  jobQueue.push(job.id);
+  dispatchNextJobs();
+};
+
 app.post('/media/download', async (req, res) => {
   const { ref } = req.body ?? {};
 
@@ -399,16 +559,7 @@ app.post('/media/download', async (req, res) => {
 
   const job = createJobRecord(trimmedRef);
 
-  setImmediate(() => {
-    runDownloadJob(job).catch((error) => {
-      console.error(`Unexpected job error for ${job.id}:`, error);
-      setJobStatus(job, JOB_STATUSES.failed, {
-        progressMessage: 'Failed',
-        error: error.message,
-        result: undefined
-      });
-    });
-  });
+  enqueueJobExecution(job);
 
   return res.status(202).json({
     queryId: job.id,
@@ -427,6 +578,32 @@ app.get('/media/download/:queryId/status', (req, res) => {
   }
 
   return res.status(200).json(getJobSummary(job));
+});
+
+app.get('/config', (_req, res) => {
+  res.status(200).json({
+    concurrency: processorConfig.concurrency,
+    queueSize: jobQueue.length,
+    activeJobs
+  });
+});
+
+app.put('/config', (req, res) => {
+  const { concurrency } = req.body ?? {};
+  const parsed = Number(concurrency);
+
+  if (!Number.isFinite(parsed) || Number.isNaN(parsed) || parsed < 1) {
+    return res.status(400).json({ error: 'concurrency must be a positive number' });
+  }
+
+  processorConfig.concurrency = Math.floor(parsed);
+  dispatchNextJobs();
+
+  return res.status(200).json({
+    concurrency: processorConfig.concurrency,
+    queueSize: jobQueue.length,
+    activeJobs
+  });
 });
 
 app.listen(port, () => {

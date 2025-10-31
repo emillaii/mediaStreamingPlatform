@@ -3,6 +3,8 @@ import cors from 'cors';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import mediaRoutes from './routes/media.js';
+import processingRoutes from './routes/processing.js';
+import mediaWorkerRoutes from './routes/mediaWorkers.js';
 
 const app = express();
 
@@ -38,6 +40,8 @@ app.get('/health', (_req, res) => {
 app.use('/auth', authRoutes);
 app.use('/users', userRoutes);
 app.use('/media', mediaRoutes);
+app.use('/processing', processingRoutes);
+app.use('/media-workers', mediaWorkerRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not Found' });

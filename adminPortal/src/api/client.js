@@ -76,7 +76,11 @@ const buildQueryString = (params = {}) => {
 };
 
 export const fetchMediaLibrary = async (params = {}) => {
-  const queryString = buildQueryString({ search: params.search });
+  const queryString = buildQueryString({
+    search: params.search,
+    page: params.page,
+    pageSize: params.pageSize
+  });
 
   const response = await fetch(`${getBaseUrl()}/media${queryString}`);
   return handleResponse(response);
@@ -107,5 +111,85 @@ export const refreshMediaDownloadUrl = async (ref) => {
 
   const encodedRef = encodeURIComponent(normalizedRef);
   const response = await fetch(`${getBaseUrl()}/media/${encodedRef}/download-url`);
+  return handleResponse(response);
+};
+
+export const enqueueProcessingJob = async ({ mediaId, ref, priority, queuedBy } = {}) => {
+  const payload = {};
+
+  if (mediaId) {
+    payload.mediaId = mediaId;
+  }
+
+  if (ref) {
+    payload.ref = ref;
+  }
+
+  if (priority) {
+    payload.priority = priority;
+  }
+
+  if (queuedBy) {
+    payload.queuedBy = queuedBy;
+  }
+
+  const response = await fetch(`${getBaseUrl()}/processing/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  return handleResponse(response);
+};
+
+export const fetchProcessingJobs = async (params = {}) => {
+  const queryString = buildQueryString({
+    page: params.page,
+    pageSize: params.pageSize
+  });
+
+  const response = await fetch(`${getBaseUrl()}/processing/jobs${queryString}`);
+  return handleResponse(response);
+};
+
+export const fetchProcessingJob = async (jobId) => {
+  const response = await fetch(`${getBaseUrl()}/processing/jobs/${jobId}`);
+  return handleResponse(response);
+};
+
+export const fetchMediaWorkers = async () => {
+  const response = await fetch(`${getBaseUrl()}/media-workers`);
+  return handleResponse(response);
+};
+
+export const createMediaWorker = async (worker) => {
+  const response = await fetch(`${getBaseUrl()}/media-workers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(worker)
+  });
+
+  return handleResponse(response);
+};
+
+export const updateMediaWorker = async (workerId, updates) => {
+  const response = await fetch(`${getBaseUrl()}/media-workers/${workerId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates)
+  });
+
+  return handleResponse(response);
+};
+
+export const deleteMediaWorker = async (workerId) => {
+  const response = await fetch(`${getBaseUrl()}/media-workers/${workerId}`, {
+    method: 'DELETE'
+  });
+
+  if (response.status === 204) {
+    return { success: true };
+  }
+
   return handleResponse(response);
 };

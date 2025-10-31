@@ -1,4 +1,4 @@
-import { LayoutDashboard, Video, Clock, Settings, LogOut, BarChart3, Users, FileVideo } from "lucide-react";
+import { LayoutDashboard, Video, Clock, Settings, LogOut, BarChart3, Users, FileVideo, Server } from "lucide-react";
 import { Button } from "./ui/button";
 import { Separator } from "./ui/separator";
 
@@ -7,6 +7,7 @@ export function Sidebar({ activeTab, onTabChange, onLogout }) {
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "media", label: "Media Library", icon: Video },
     { id: "processing", label: "Processing Queue", icon: Clock },
+    { id: "workers", label: "Media Workers", icon: Server },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "users", label: "Users", icon: Users },
   ];

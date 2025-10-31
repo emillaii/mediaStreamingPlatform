@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Toaster } from "sonner";
 import { Login } from "./components/Login.jsx";
 import { Sidebar } from "./components/Sidebar.jsx";
 import { Footer } from "./components/Footer.jsx";
@@ -8,6 +9,7 @@ import { ProcessingQueue } from "./components/ProcessingQueue.jsx";
 import { Analytics } from "./components/Analytics.jsx";
 import { Users } from "./components/Users.jsx";
 import { Settings } from "./components/Settings.jsx";
+import { MediaWorkers } from "./components/MediaWorkers.jsx";
 
 const ADMIN_SESSION_STORAGE_KEY = "mediaflow-admin-session";
 
@@ -78,6 +80,8 @@ export default function App() {
         return <MediaLibrary />;
       case "processing":
         return <ProcessingQueue />;
+      case "workers":
+        return <MediaWorkers />;
       case "analytics":
         return <Analytics />;
       case "users":
@@ -94,6 +98,7 @@ export default function App() {
       <Sidebar activeTab={activeTab} onTabChange={setActiveTab} onLogout={handleLogout} />
 
       <div className="flex-1 flex flex-col">
+        <Toaster position="bottom-right" richColors />
         <header className="bg-white/80 backdrop-blur-sm border-b border-slate-200 sticky top-0 z-10 shadow-sm">
           <div className="px-8 py-5">
             <div className="max-w-7xl mx-auto flex items-center justify-between">
@@ -105,6 +110,7 @@ export default function App() {
                   {activeTab === "dashboard" && "Overview of your media processing operations"}
                   {activeTab === "media" && "Manage and organize your media files"}
                   {activeTab === "processing" && "Monitor active processing jobs"}
+                  {activeTab === "workers" && "Configure media processing workers and capacity"}
                   {activeTab === "analytics" && "Track performance and engagement metrics"}
                   {activeTab === "users" && "Manage user accounts and permissions"}
                   {activeTab === "settings" && "Configure system preferences"}
