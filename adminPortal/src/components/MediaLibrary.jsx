@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
@@ -30,6 +30,58 @@ const formatMetadataDate = (value) => {
 
 const MEDIA_ASSET_BASE_URL = "http://localhost:8081";
 const HLS_STREAM_BASE_URL = MEDIA_ASSET_BASE_URL;
+
+const loadShakaPlayer = (() => {
+  let loaderPromise = null;
+
+  return () => {
+    if (typeof window === "undefined") {
+      return Promise.reject(new Error("Shaka player is only available in the browser."));
+    }
+
+    if (window.shaka) {
+      return Promise.resolve(window.shaka);
+    }
+
+    if (!loaderPromise) {
+      loaderPromise = new Promise((resolve, reject) => {
+        const existingScript = document.querySelector("script[data-shaka-player]");
+
+        const handleLoad = () => {
+          if (window.shaka) {
+            resolve(window.shaka);
+          } else {
+            reject(new Error("Shaka player script loaded without exposing shaka global."));
+          }
+        };
+
+        const handleError = () => {
+          reject(new Error("Failed to load Shaka player script."));
+        };
+
+        if (existingScript) {
+          existingScript.addEventListener("load", handleLoad, { once: true });
+          existingScript.addEventListener("error", handleError, { once: true });
+          return;
+        }
+
+        const script = document.createElement("script");
+        script.src = "https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.9.6/shaka-player.compiled.min.js";
+        script.async = true;
+        script.defer = true;
+        script.dataset.shakaPlayer = "true";
+        script.addEventListener("load", handleLoad, { once: true });
+        script.addEventListener("error", handleError, { once: true });
+        document.head.appendChild(script);
+      }).catch((error) => {
+        loaderPromise = null;
+        throw error;
+      });
+    }
+
+    return loaderPromise;
+  };
+})();
 
 const getMediaStatusMeta = (status) => {
   const normalized = (status ?? "open").toLowerCase();
@@ -91,6 +143,11 @@ export function MediaLibrary() {
   const [totalItems, setTotalItems] = useState(0);
   const [linkLoadingRef, setLinkLoadingRef] = useState(null);
   const [enqueueingRef, setEnqueueingRef] = useState(null);
+  const videoRef = useRef(null);
+  const shakaPlayerRef = useRef(null);
+  const playerErrorHandlerRef = useRef(null);
+  const [isPlayerLoading, setIsPlayerLoading] = useState(false);
+  const [playerError, setPlayerError] = useState(null);
 
   const loadMedia = useCallback(
     async ({ showSpinner = true, page, size, query } = {}) => {
@@ -209,6 +266,117 @@ export function MediaLibrary() {
   const isSelectedMediaLinkLoading = Boolean(selectedMediaRef && linkLoadingRef === selectedMediaRef);
   const hlsUrl = selectedMediaRef ? `${HLS_STREAM_BASE_URL}/${selectedMediaRef}/hls/master.m3u8` : null;
   const canShowHls = selectedMedia?.mediaStatus === "ingested" && Boolean(hlsUrl);
+  const selectedMediaThumbnailUrl =
+    selectedMediaRef && selectedMedia?.mediaStatus === "ingested"
+      ? `${MEDIA_ASSET_BASE_URL}/${encodeURIComponent(selectedMediaRef)}/thumbnail.jpg`
+      : null;
+
+  useEffect(() => {
+    const cleanupPlayer = async () => {
+      if (shakaPlayerRef.current) {
+        try {
+          if (playerErrorHandlerRef.current) {
+            shakaPlayerRef.current.removeEventListener("error", playerErrorHandlerRef.current);
+            playerErrorHandlerRef.current = null;
+          }
+          await shakaPlayerRef.current.destroy();
+        } catch (destroyError) {
+          console.warn("Failed to destroy Shaka player", destroyError);
+        } finally {
+          shakaPlayerRef.current = null;
+        }
+      }
+    };
+
+    if (!selectedMedia || !canShowHls) {
+      cleanupPlayer();
+      setIsPlayerLoading(false);
+      setPlayerError(null);
+      return;
+    }
+
+    let isMounted = true;
+    setIsPlayerLoading(true);
+    setPlayerError(null);
+
+    loadShakaPlayer()
+      .then((shaka) => {
+        if (!isMounted) {
+          return;
+        }
+
+        if (!shaka?.Player?.isBrowserSupported?.()) {
+          setPlayerError("Current browser does not support Shaka player.");
+          setIsPlayerLoading(false);
+          return;
+        }
+
+        try {
+          shaka?.polyfill?.installAll?.();
+        } catch (polyfillError) {
+          console.warn("Failed to install Shaka polyfills", polyfillError);
+        }
+
+        const videoElement = videoRef.current;
+        if (!videoElement) {
+          setIsPlayerLoading(false);
+          return;
+        }
+
+        const player = new shaka.Player(videoElement);
+        shakaPlayerRef.current = player;
+
+        const handlePlayerError = (event) => {
+          const detailMessage = event?.detail?.message || event?.detail || "Playback error";
+          setPlayerError(detailMessage);
+        };
+
+        playerErrorHandlerRef.current = handlePlayerError;
+        player.addEventListener("error", handlePlayerError);
+
+        player.load(hlsUrl)
+          .then(() => {
+            if (!isMounted) {
+              return;
+            }
+            setIsPlayerLoading(false);
+          })
+          .catch((loadError) => {
+            console.error("Failed to load HLS stream", loadError);
+            if (!isMounted) {
+              return;
+            }
+            setPlayerError(loadError?.message ?? "Failed to load stream");
+            setIsPlayerLoading(false);
+          });
+      })
+      .catch((playerError) => {
+        console.error("Failed to load Shaka player", playerError);
+        if (!isMounted) {
+          return;
+        }
+        setPlayerError(playerError?.message ?? "Unable to initialise player");
+        setIsPlayerLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+      cleanupPlayer();
+    };
+  }, [selectedMedia, canShowHls, hlsUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (shakaPlayerRef.current) {
+        if (playerErrorHandlerRef.current) {
+          shakaPlayerRef.current.removeEventListener("error", playerErrorHandlerRef.current);
+          playerErrorHandlerRef.current = null;
+        }
+        shakaPlayerRef.current.destroy().catch(() => {});
+        shakaPlayerRef.current = null;
+      }
+    };
+  }, []);
   const selectedMediaStatusMeta = getMediaStatusMeta(selectedMedia?.mediaStatus);
 
   const openPrimaryLink = (url) => {
@@ -583,7 +751,10 @@ export function MediaLibrary() {
       </Card>
 
       <Dialog open={Boolean(selectedMedia)} onOpenChange={(open) => setSelectedMedia(open ? selectedMedia : null)}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-none lg:max-w-none sm:w-[60vw] lg:w-[60vw]">
+        <DialogContent
+          className="sm:max-w-none lg:max-w-none w-[90vw] max-w-5xl overflow-hidden"
+          style={{ height: "70vh" }}
+        >
           {selectedMedia ? (
             <>
               <DialogHeader>
@@ -597,81 +768,138 @@ export function MediaLibrary() {
                   </Badge>
                 </div>
               </DialogHeader>
-              <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Resource ID</p>
-                    <p className="text-sm text-slate-900">{selectedMedia.resourceId ?? "—"}</p>
+              <div className="space-y-6 overflow-y-auto pr-1 flex-1">
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-6">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Resource ID</p>
+                      <p className="text-sm text-slate-900">{selectedMedia.resourceId ?? "—"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Reference</p>
+                      <p className="text-sm text-slate-900">{selectedMedia.ref ?? "—"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Format</p>
+                      <p className="text-sm text-slate-900">{selectedMedia.extension ?? "—"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Access</p>
+                      <p className="text-sm text-slate-900">{selectedMedia.access ?? "—"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Contributor</p>
+                      <p className="text-sm text-slate-900">{selectedMedia.contributedBy ?? "—"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Page Placement</p>
+                      <p className="text-sm text-slate-900">
+                        {typeof selectedMedia.page === "number" ? `Page ${selectedMedia.page}` : "—"}
+                        {typeof selectedMedia.positionOnPage === "number" ? ` · Position ${selectedMedia.positionOnPage}` : ""}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Listed Date</p>
+                      <p className="text-sm text-slate-900">{formatMetadataDate(selectedMedia.listDate)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Effective Date</p>
+                      <p className="text-sm text-slate-900">{formatMetadataDate(selectedMedia.effectiveDate)}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Reference</p>
-                    <p className="text-sm text-slate-900">{selectedMedia.ref ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Format</p>
-                    <p className="text-sm text-slate-900">{selectedMedia.extension ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Access</p>
-                    <p className="text-sm text-slate-900">{selectedMedia.access ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Contributor</p>
-                    <p className="text-sm text-slate-900">{selectedMedia.contributedBy ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Page Placement</p>
-                    <p className="text-sm text-slate-900">
-                      {typeof selectedMedia.page === "number" ? `Page ${selectedMedia.page}` : "—"}
-                      {typeof selectedMedia.positionOnPage === "number" ? ` · Position ${selectedMedia.positionOnPage}` : ""}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Listed Date</p>
-                    <p className="text-sm text-slate-900">{formatMetadataDate(selectedMedia.listDate)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Effective Date</p>
-                    <p className="text-sm text-slate-900">{formatMetadataDate(selectedMedia.effectiveDate)}</p>
-                  </div>
-                </div>
 
-                {canShowHls ? (
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">HLS Stream</p>
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                      <code className="flex-1 text-xs bg-slate-100 border border-slate-200 rounded px-3 py-2 break-all">
-                        {hlsUrl}
-                      </code>
-                      <div className="flex items-center gap-2">
-                        <Button variant="outline" size="sm" onClick={() => handleCopyToClipboard(hlsUrl)}>
-                          Copy URL
-                        </Button>
-                        <Button variant="secondary" size="sm" onClick={() => openPrimaryLink(hlsUrl)}>
-                          Open
-                        </Button>
+                  {selectedMedia.keywords?.length ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">Keywords</p>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedMedia.keywords.map((keyword) => (
+                          <Badge
+                            key={keyword}
+                            variant="secondary"
+                            className="bg-slate-100 text-slate-700 border-slate-200 whitespace-normal break-words"
+                          >
+                            {keyword}
+                          </Badge>
+                        ))}
                       </div>
                     </div>
-                  </div>
-                ) : null}
+                  ) : null}
 
-                {selectedMedia.keywords?.length ? (
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">Keywords</p>
-                    <div className="flex flex-wrap gap-2">
-                      {selectedMedia.keywords.map((keyword) => (
-                        <Badge
-                          key={keyword}
-                          variant="secondary"
-                          className="bg-slate-100 text-slate-700 border-slate-200 whitespace-normal break-words"
-                        >
-                          {keyword}
-                        </Badge>
-                      ))}
+                  <div className="space-y-4">
+                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-950">
+                      {canShowHls ? (
+                        <div className="relative aspect-video">
+                          <video
+                            ref={videoRef}
+                            className="h-full w-full bg-black object-contain"
+                            controls
+                            playsInline
+                            poster={selectedMediaThumbnailUrl ?? undefined}
+                            crossOrigin="anonymous"
+                          />
+                          {isPlayerLoading ? (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-xs font-medium text-slate-100">
+                              <Loader2 className="h-5 w-5 animate-spin" />
+                              <span>Preparing stream...</span>
+                            </div>
+                          ) : null}
+                          {playerError ? (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/80 px-4 text-center text-sm text-red-400">
+                              {playerError}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : selectedMediaThumbnailUrl ? (
+                        <div className="relative aspect-video bg-black">
+                          <img
+                            src={selectedMediaThumbnailUrl}
+                            alt={`${selectedMedia.title ?? selectedMediaRef ?? "Media"} thumbnail`}
+                            className="h-full w-full object-cover"
+                          />
+                          <div className="absolute inset-x-0 bottom-0 bg-black/70 p-3 text-center text-xs text-slate-100">
+                            Stream preview becomes available once this item is fully ingested.
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex aspect-video flex-col items-center justify-center gap-2 bg-slate-100 text-center text-xs text-slate-500">
+                          <Eye className="h-5 w-5" />
+                          <span>No preview available</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-slate-500">HLS Stream</p>
+                        {hlsUrl ? (
+                          <>
+                            <code className="mt-2 block max-h-32 overflow-y-auto break-all rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                              {hlsUrl}
+                            </code>
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <Button variant="outline" size="sm" onClick={() => handleCopyToClipboard(hlsUrl)}>
+                                Copy URL
+                              </Button>
+                              <Button variant="secondary" size="sm" onClick={() => openPrimaryLink(hlsUrl)}>
+                                Open
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          <p className="mt-2 text-xs text-slate-500">
+                            A manifest URL will appear once this media item finishes processing.
+                          </p>
+                        )}
+                      </div>
+
+                      {playerError && canShowHls ? (
+                        <p className="text-xs text-red-600">
+                          Playback error: {playerError}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
-                ) : null}
-
+                </div>
               </div>
             </>
           ) : null}
@@ -754,7 +982,7 @@ export function MediaLibrary() {
                       Uploading...
                     </span>
                   ) : (
-                    'Import Metadata'
+                    <span>Import Metadata</span>
                   )}
                 </Button>
               </div>

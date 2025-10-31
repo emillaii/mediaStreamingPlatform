@@ -110,100 +110,89 @@ const runFfmpegDownload = (inputUrl, outputPath, headers) => new Promise((resolv
   });
 });
 
-const createThumbnailFromVideo = (inputPath, primaryPath, fallbackPath) =>
+const captureFrameFromSource = (source, outputPath, { seekSeconds = 0, headers } = {}) =>
   new Promise((resolve, reject) => {
-    const captureFrame = (seekSeconds, targetPath) =>
-      new Promise((innerResolve, innerReject) => {
-        const args = ['-y'];
+    const args = ['-y'];
 
-        if (seekSeconds > 0) {
-          args.push('-ss', String(seekSeconds));
-        }
+    if (seekSeconds > 0) {
+      args.push('-ss', String(seekSeconds));
+    }
 
-        args.push('-i', inputPath, '-frames:v', '1', '-q:v', '2', targetPath);
+    if (headers) {
+      args.push('-headers', headers);
+    }
 
-        const ffmpeg = spawn('ffmpeg', args);
+    args.push('-i', source, '-frames:v', '1', '-q:v', '2', outputPath);
 
-        ffmpeg.on('error', innerReject);
+    const ffmpeg = spawn('ffmpeg', args);
 
-        ffmpeg.stderr.on('data', (data) => {
-          console.log(`[ffmpeg-thumb] ${data}`.trimEnd());
-        });
+    ffmpeg.on('error', reject);
 
-        ffmpeg.on('close', (code) => {
-          if (code === 0) {
-            innerResolve(targetPath);
-          } else {
-            innerReject(new Error(`ffmpeg exited with code ${code}`));
-          }
-        });
-      });
+    ffmpeg.stderr.on('data', (data) => {
+      console.log(`[ffmpeg-thumb] ${data}`.trimEnd());
+    });
 
-    const scoreFrame = async (imagePath) => {
-      return new Promise((scoreResolve, scoreReject) => {
-        const ffprobeArgs = [
-          '-v',
-          'error',
-          '-select_streams',
-          'v:0',
-          '-show_entries',
-          'frame_tags=lavfi.signalstats.SAT',
-          '-of',
-          'default=noprint_wrappers=1:nokey=1',
-          '-i',
-          imagePath
-        ];
-
-        const ffprobe = spawn('ffprobe', ffprobeArgs);
-        let output = '';
-
-        ffprobe.stdout.on('data', (data) => {
-          output += data.toString();
-        });
-
-        ffprobe.on('error', scoreReject);
-
-        ffprobe.on('close', (code) => {
-          if (code !== 0) {
-            return scoreReject(new Error(`ffprobe exited with code ${code}`));
-          }
-
-          const value = Number.parseFloat(output.trim());
-          if (Number.isNaN(value)) {
-            return scoreResolve(Infinity);
-          }
-
-          scoreResolve(value);
-        });
-      });
-    };
-
-    const attempt = async () => {
-      try {
-        await captureFrame(0, primaryPath);
-        const score = await scoreFrame(primaryPath);
-
-        if (score > 0.01 || !fallbackPath) {
-          return primaryPath;
-        }
-
-        await captureFrame(3, fallbackPath);
-        return fallbackPath;
-      } catch (error) {
-        if (fallbackPath && !primaryPath.endsWith(fallbackPath)) {
-          await captureFrame(3, fallbackPath);
-          return fallbackPath;
-        }
-        throw error;
+    ffmpeg.on('close', (code) => {
+      if (code === 0) {
+        resolve(outputPath);
+      } else {
+        reject(new Error(`ffmpeg exited with code ${code}`));
       }
-    };
-
-    attempt()
-      .then(resolve)
-      .catch((error) => {
-        reject(error);
-      });
+    });
   });
+
+const isImageMostlyDark = async (imagePath, threshold = 12) =>
+  new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', ['-v', 'error', '-i', imagePath, '-f', 'rawvideo', '-pix_fmt', 'gray', '-']);
+
+    let total = 0;
+    let count = 0;
+
+    ffmpeg.stdout.on('data', (chunk) => {
+      for (let i = 0; i < chunk.length; i += 1) {
+        total += chunk[i];
+      }
+      count += chunk.length;
+    });
+
+    ffmpeg.on('error', reject);
+
+    ffmpeg.on('close', (code) => {
+      if (code !== 0) {
+        return reject(new Error(`ffmpeg luminance analysis exited with code ${code}`));
+      }
+
+      if (count === 0) {
+        return resolve(true);
+      }
+
+      const average = total / count;
+      resolve(average <= threshold);
+    });
+  });
+
+const createThumbnailFromSource = async (source, outputPath, options = {}) => {
+  const seekAttempts = Array.isArray(options.seeks) && options.seeks.length > 0 ? options.seeks : [0, 3, 6, 9];
+
+  for (const seekSeconds of seekAttempts) {
+    await captureFrameFromSource(source, outputPath, { ...options, seekSeconds });
+
+    try {
+      const isDark = await isImageMostlyDark(outputPath);
+
+      if (!isDark) {
+        return outputPath;
+      }
+
+      console.warn(`Thumbnail captured at ${seekSeconds}s appears dark; trying next offset.`);
+    } catch (analysisError) {
+      console.warn('Thumbnail brightness analysis failed; using current frame.', analysisError);
+      return outputPath;
+    }
+  }
+
+  return outputPath;
+};
 
 const parseBitrate = (bitrate) => {
   if (typeof bitrate === 'number') {
@@ -399,23 +388,12 @@ const runDownloadJob = async (job) => {
 
     let thumbnailRecord = null;
     const primaryThumbnailPath = path.join(refDir, 'thumbnail.jpg');
-    const altThumbnailPath = path.join(refDir, 'thumbnail_alt.jpg');
     try {
-      const chosenThumbnailPath = await createThumbnailFromVideo(outputPath, primaryThumbnailPath, altThumbnailPath);
+      const chosenThumbnailPath = await createThumbnailFromSource(outputPath, primaryThumbnailPath);
       thumbnailRecord = {
         path: chosenThumbnailPath,
         filename: path.basename(chosenThumbnailPath)
       };
-
-      if (chosenThumbnailPath === altThumbnailPath) {
-        try {
-          await fs.rename(altThumbnailPath, primaryThumbnailPath);
-          thumbnailRecord.path = primaryThumbnailPath;
-          thumbnailRecord.filename = 'thumbnail.jpg';
-        } catch (renameError) {
-          console.warn(`Failed to rename fallback thumbnail for job ${job.id}`, renameError);
-        }
-      }
     } catch (thumbnailError) {
       console.error(`Thumbnail generation failed for job ${job.id}`, thumbnailError);
     }
@@ -488,10 +466,19 @@ const fetchMediaDownloadUrl = async (ref) => {
     parsed = payloadText;
   }
 
-  const downloadUrl =
-    typeof parsed === 'string'
-      ? parsed.replace(/\\\//g, '/')
-      : undefined;
+  let downloadUrl;
+
+  if (typeof parsed === 'string') {
+    downloadUrl = parsed.replace(/\\\//g, '/');
+  } else if (parsed && typeof parsed === 'object') {
+    const candidates = [parsed.url, parsed.href, parsed.link, parsed.path];
+    for (const value of candidates) {
+      if (typeof value === 'string' && value.trim() !== '') {
+        downloadUrl = value.replace(/\\\//g, '/');
+        break;
+      }
+    }
+  }
 
   if (!downloadUrl || !downloadUrl.startsWith('http')) {
     throw new Error('Unexpected response format when fetching media URL');
@@ -567,6 +554,39 @@ app.post('/media/download', async (req, res) => {
     progressMessage: job.progressMessage,
     createdAt: job.createdAt
   });
+});
+
+app.post('/media/thumbnail', async (req, res) => {
+  const { ref } = req.body ?? {};
+
+  if (typeof ref !== 'string' || ref.trim() === '') {
+    return res.status(400).json({ error: 'ref is required' });
+  }
+
+  const trimmedRef = ref.trim();
+
+  try {
+    const { sanitizedRef, refDir } = await ensureOutputDirs(trimmedRef);
+
+    const downloadUrl = await fetchMediaDownloadUrl(trimmedRef);
+    const headerString = `Referer: ${RESOURCE_SPACE_REFERER}\r\nCookie: ${RESOURCE_SPACE_COOKIE}\r\n`;
+
+    const thumbnailPath = path.join(refDir, 'thumbnail.jpg');
+    await createThumbnailFromSource(downloadUrl, thumbnailPath, { headers: headerString });
+
+    return res.status(201).json({
+      ref: trimmedRef,
+      sanitizedRef,
+      thumbnail: {
+        path: thumbnailPath,
+        filename: path.basename(thumbnailPath)
+      },
+      sourceUrl: downloadUrl
+    });
+  } catch (error) {
+    console.error(`Thumbnail generation request failed for ref ${ref}:`, error);
+    return res.status(500).json({ error: error.message ?? 'Failed to generate thumbnail' });
+  }
 });
 
 app.get('/media/download/:queryId/status', (req, res) => {
